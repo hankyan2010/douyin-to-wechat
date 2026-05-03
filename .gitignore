@@ -1,0 +1,27 @@
+# 凭据 / 本地状态
+.env
+.wechat-token.json
+queue.json
+queue.json.lock
+queue.json.tmp
+queue.lock
+
+# 运行产物（视频、音频、卡片图、草稿元数据）
+output/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Whisper 本地缓存
+~/.cache/whisper/
