@@ -70,6 +70,7 @@ def run(url: str, publish: bool = False, max_cards: int = 6, work_root: Path = N
     final = {
         "url": url,
         "title": script["title"],
+        "backend": script.get("_backend", "unknown"),
         "transcript_chars": len(transcript),
         "cards_count": len(script["cards"]),
         "images_count": len(image_paths),

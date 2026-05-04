@@ -36,6 +36,7 @@ def run_one(force_publish: bool = False) -> dict:
         title = result["title"]
         draft_id = result["draft_media_id"]
         publish_id = result.get("publish_id")
+        backend = result.get("backend", "")
 
         # 回填
         queue.update(
@@ -51,7 +52,7 @@ def run_one(force_publish: bool = False) -> dict:
         if publish_id:
             n = notify.notify_published(title, publish_id)
         else:
-            n = notify.notify_draft_ready(title, draft_id, pending_left, item["url"])
+            n = notify.notify_draft_ready(title, draft_id, pending_left, item["url"], backend=backend)
         print(f"[daily] notify: {n}")
 
         return {"ok": True, "item_id": item["id"], "title": title,

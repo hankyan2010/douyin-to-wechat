@@ -76,9 +76,16 @@ def send_text(text: str, to_user: str = None, context_token: str = "") -> dict:
 
 
 def notify_draft_ready(title: str, draft_media_id: str, queue_pos: int = 0,
-                       url: str = "") -> dict:
+                       url: str = "", backend: str = "") -> dict:
+    backend_tag = ""
+    if backend == "claude":
+        backend_tag = " [claude]"
+    elif backend == "doubao_fallback":
+        backend_tag = " ⚠️[豆包·降级]"
+    elif backend:
+        backend_tag = f" [{backend}]"
     text = (
-        f"📝 公众号日更草稿已建好\n\n"
+        f"📝 公众号日更草稿已建好{backend_tag}\n\n"
         f"《{title}》\n\n"
         f"draft_id: {draft_media_id[:24]}...\n"
         f"剩余队列: {queue_pos} 条\n"

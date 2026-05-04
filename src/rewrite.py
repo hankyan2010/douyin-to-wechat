@@ -14,6 +14,7 @@
 import json
 import os
 import re
+import subprocess
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -29,10 +30,18 @@ if not ARK_KEY:
 
 client = OpenAI(api_key=ARK_KEY, base_url=ARK_BASE)
 
+# 主备切换：优先走 Mac 上的 Claude Code（5x 会员，质量更高）
+# Mac 不在线/超时/解析失败 → 自动降级到豆包
+MAC_TS_IP = os.getenv("MAC_TS_IP", "100.119.31.39")
+MAC_USER = os.getenv("MAC_USER", "yanhan")
+MAC_CLAUDE_BIN = os.getenv("MAC_CLAUDE_BIN", "/Users/yanhan/.npm-global/bin/claude")
+PRIMARY_TIMEOUT = int(os.getenv("REWRITE_PRIMARY_TIMEOUT", "180"))
+
 SYSTEM = """你是一位资深公众号"贴图号"内容编辑。把抖音口播原文重写成"贴图"格式。
 
 【标题】（最重要！）
-- 长度 16~22 字，必须**反常识/反共识**，让人一看就想点开
+- **严格 ≤ 20 字（含所有标点和空格）**——超过 20 字微信前端会截断显示
+- 必须**反常识/反共识**，让人一看就想点开
 - 用对比、反差、悖论结构，把作者的核心观点最锋利的那一面亮出来
 - 优秀范例（学这种感觉）：
   · "AI时代赚小钱跟捡钱一样，赚大钱几乎不可能"
@@ -70,7 +79,58 @@ USER_TEMPLATE = """以下是抖音口播原文：
 }}"""
 
 
-def rewrite(transcript: str, max_cards: int = 6) -> dict:
+def _strip_json_fence(raw: str) -> str:
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    # 容错：claude -p 可能输出多行说明，取第一段 JSON
+    m = re.search(r"\{[\s\S]*\}", raw)
+    return m.group(0) if m else raw
+
+
+def _call_claude_once(full_prompt: str) -> str:
+    cmd = [
+        "ssh",
+        "-o", "ConnectTimeout=8",
+        "-o", "ServerAliveInterval=15",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+        f"{MAC_USER}@{MAC_TS_IP}",
+        f"cat | {MAC_CLAUDE_BIN} -p",
+    ]
+    r = subprocess.run(cmd, input=full_prompt.encode("utf-8"),
+                       capture_output=True, timeout=PRIMARY_TIMEOUT)
+    if r.returncode != 0:
+        raise RuntimeError(f"ssh/claude exit={r.returncode}: {r.stderr.decode()[:300]}")
+    return r.stdout.decode("utf-8")
+
+
+def rewrite_via_claude(transcript: str, max_cards: int = 6) -> dict:
+    """主：SSH 到 Mac 跑 claude -p。失败重试一次。"""
+    user_msg = USER_TEMPLATE.format(transcript=transcript.strip())
+    full_prompt = SYSTEM + "\n\n---\n\n" + user_msg + "\n\n严格只输出 JSON 对象本体，不要任何前后说明文字、不要 markdown 代码块。"
+    print(f"[rewrite] 主路径: SSH→Mac claude -p (timeout={PRIMARY_TIMEOUT}s)")
+
+    last_err = None
+    for attempt in range(2):
+        try:
+            raw_out = _call_claude_once(full_prompt)
+            stripped = _strip_json_fence(raw_out)
+            data = json.loads(stripped)
+            data["cards"] = data.get("cards", [])[:max_cards]
+            data["_backend"] = "claude"
+            return data
+        except (json.JSONDecodeError, KeyError) as e:
+            last_err = e
+            print(f"[rewrite] 主路径第{attempt+1}次解析失败 ({type(e).__name__}): {str(e)[:150]}")
+            if attempt == 0:
+                print("[rewrite] 重试中...")
+    raise RuntimeError(f"claude 输出解析失败（已重试1次）: {last_err}")
+
+
+def rewrite_via_doubao(transcript: str, max_cards: int = 6) -> dict:
+    """备：本地豆包 API。"""
+    print("[rewrite] 备用路径: 豆包 API")
     user_msg = USER_TEMPLATE.format(transcript=transcript.strip())
     resp = client.chat.completions.create(
         model=ARK_MODEL,
@@ -80,14 +140,22 @@ def rewrite(transcript: str, max_cards: int = 6) -> dict:
         ],
         temperature=0.7,
     )
-    raw = resp.choices[0].message.content.strip()
-    # 容错：剥掉可能的 ```json``` 包裹
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
+    raw = _strip_json_fence(resp.choices[0].message.content)
     data = json.loads(raw)
-    # 截断到 max_cards
     data["cards"] = data.get("cards", [])[:max_cards]
+    data["_backend"] = "doubao_fallback"
     return data
+
+
+def rewrite(transcript: str, max_cards: int = 6) -> dict:
+    """主备切换：优先 Claude，失败降级豆包。"""
+    try:
+        return rewrite_via_claude(transcript, max_cards)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError,
+            RuntimeError, json.JSONDecodeError, OSError) as e:
+        print(f"[rewrite] 主路径失败 ({type(e).__name__}): {str(e)[:200]}")
+        print("[rewrite] → 降级到豆包")
+        return rewrite_via_doubao(transcript, max_cards)
 
 
 if __name__ == "__main__":
