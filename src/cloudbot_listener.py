@@ -102,17 +102,32 @@ def handle_text(text: str, from_user: str, context_token: str) -> str:
     if not text:
         return ""
 
-    # 1. 抖音链接 → 入队
+    # 1. 抖音链接 → 入队 + 立即异步触发生成
     m = URL_PATTERN.search(text)
     if m:
         from . import queue
+        import subprocess, sys as _sys
         url = m.group(0)
         priority = 10 if any(k in text for k in ["插队", "急", "优先", "priority"]) else 0
         item = queue.add(url, priority=priority, source="cloudbot")
         pending = queue.list_items(status="pending")
         pos = next((i for i, x in enumerate(pending, 1) if x["id"] == item["id"]), 0)
         mark = "（已插队）" if priority > 0 else ""
-        return f"✅ 已入队{mark}\n位置 #{pos} / 共 {len(pending)} 条待办\nID: {item['id']}"
+        # 异步启动生成（不阻塞 long-poll）
+        # 用 nohup + 重定向，进程脱离当前 daemon
+        proj_root = str(Path(__file__).parent.parent)
+        subprocess.Popen(
+            [_sys.executable, "-m", "src.daily_publish", "generate"],
+            cwd=proj_root,
+            stdout=open("/var/log/d2w-generate.log", "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        return (f"✅ 已入队{mark}\n"
+                f"位置 #{pos} / 共 {len(pending)} 条待办\n"
+                f"ID: {item['id']}\n"
+                f"⏳ 后台生成中（约 3 分钟），完成会推草稿通知。\n"
+                f"明早 7:00 自动发布最早一条 draft_ready。")
 
     # 2. 帮助
     if CMD_HELP.match(text):
