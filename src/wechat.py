@@ -71,7 +71,7 @@ def create_newspic_draft(title: str, content: str, image_media_ids: list,
     """
     token = get_token()
     url = f"{API_BASE}/cgi-bin/draft/add?access_token={token}"
-    title = _truncate_bytes(title, 90)  # 贴图标题：90 字节 ≈ 30 中文字
+    title = _truncate_bytes(title, 60)  # 贴图标题前端展示上限 ~20 字 = 60 字节
     content = _truncate_bytes(content, 600)
     article = {
         "article_type": "newspic",

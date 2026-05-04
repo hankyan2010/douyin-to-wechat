@@ -1,0 +1,18 @@
+[Unit]
+Description=douyin-to-wechat CloudBot listener (ilinkai long-poll)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/douyin-to-wechat
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/miniconda3/bin/python -m src.cloudbot_listener
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/d2w-cloudbot.log
+StandardError=append:/var/log/d2w-cloudbot.log
+
+[Install]
+WantedBy=multi-user.target
