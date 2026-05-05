@@ -129,7 +129,7 @@ def _call_claude_once(full_prompt: str) -> str:
 
 
 def rewrite_via_claude(transcript: str, max_cards: int = 6) -> dict:
-    """主：HTTP bridge → 本机 claude (优先) / SSH 直跑 (兜底)。失败重试一次。"""
+    """主：HTTP bridge → 本机 claude (优先) / SSH 直跑 (兜底)。失败重试 3 次共 4 次后才降级。"""
     user_msg = USER_TEMPLATE.format(transcript=transcript.strip())
     full_prompt = SYSTEM + "\n\n---\n\n" + user_msg + "\n\n严格只输出 JSON 对象本体，不要任何前后说明文字、不要 markdown 代码块。"
 
@@ -138,7 +138,8 @@ def rewrite_via_claude(transcript: str, max_cards: int = 6) -> dict:
     print(f"[rewrite] 主路径: {'HTTP bridge' if use_bridge else 'SSH→Mac claude -p'} (timeout={PRIMARY_TIMEOUT}s)")
 
     last_err = None
-    for attempt in range(2):
+    MAX_ATTEMPTS = 4  # 共 4 次 = 首次 + 重试 3 次
+    for attempt in range(MAX_ATTEMPTS):
         try:
             raw_out = _call_claude_via_bridge(full_prompt) if use_bridge else _call_claude_once(full_prompt)
             stripped = _strip_json_fence(raw_out)
@@ -146,12 +147,14 @@ def rewrite_via_claude(transcript: str, max_cards: int = 6) -> dict:
             data["cards"] = data.get("cards", [])[:max_cards]
             data["_backend"] = backend_label
             return data
-        except (json.JSONDecodeError, KeyError) as e:
+        except (json.JSONDecodeError, KeyError, RuntimeError, requests.RequestException,
+                subprocess.TimeoutExpired) as e:
             last_err = e
-            print(f"[rewrite] 主路径第{attempt+1}次解析失败 ({type(e).__name__}): {str(e)[:150]}")
-            if attempt == 0:
+            err_type = type(e).__name__
+            print(f"[rewrite] 主路径第 {attempt + 1}/{MAX_ATTEMPTS} 次失败 ({err_type}): {str(e)[:150]}")
+            if attempt < MAX_ATTEMPTS - 1:
                 print("[rewrite] 重试中...")
-    raise RuntimeError(f"claude 输出解析失败（已重试1次）: {last_err}")
+    raise RuntimeError(f"claude 失败（已重试 {MAX_ATTEMPTS - 1} 次）: {last_err}")
 
 
 def rewrite_via_doubao(transcript: str, max_cards: int = 6) -> dict:
