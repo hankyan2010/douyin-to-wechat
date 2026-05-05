@@ -97,6 +97,34 @@ def notify_draft_ready(title: str, draft_media_id: str, queue_pos: int = 0,
     return send_text(text)
 
 
+def notify_pending_review(item_id: str, title: str, lead: str, cards: list,
+                          backend: str = "", deadline_min: int = 60) -> dict:
+    """草稿生成完,推送给微信审核。1 小时不回则自动发。"""
+    backend_tag = ""
+    if backend == "claude_bridge":
+        backend_tag = " [claude]"
+    elif backend == "doubao_fallback":
+        backend_tag = " ⚠️[豆包·降级]"
+    elif backend:
+        backend_tag = f" [{backend}]"
+
+    # 卡片摘要 (只取 headline)
+    cards_summary = "\n".join(f"  {i+1}. {c.get('headline','')}" for i, c in enumerate(cards[:6]))
+
+    text = (
+        f"📝 草稿待审{backend_tag} (ID: {item_id[:8]})\n\n"
+        f"《{title}》\n"
+        f"导语: {lead[:50]}\n\n"
+        f"卡片:\n{cards_summary}\n\n"
+        f"━━━━━━━━━━\n"
+        f"⏰ {deadline_min} 分钟不回复,自动发布\n\n"
+        f"立即发: 回 \"发 {item_id[:8]}\"\n"
+        f"要修改: 回 \"改 {item_id[:8]} <你的修改意见>\"\n"
+        f"取消发: 回 \"删 {item_id[:8]}\""
+    )
+    return send_text(text)
+
+
 def notify_published(title: str, publish_id: int) -> dict:
     return send_text(f"✅ 已发布《{title}》\npublish_id: {publish_id}")
 
