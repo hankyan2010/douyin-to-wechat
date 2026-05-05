@@ -323,9 +323,13 @@ def render_lead_card(title: str, lead: str, total: int, out_path: Path) -> Path:
 
 
 def render_content_card(idx: int, total: int, headline: str, body: str, out_path: Path) -> Path:
-    """内容卡：页码 + 小标题(带下划波浪) + 正文。"""
+    """内容卡：页码 + 小标题(带下划波浪) + 正文 + 纳瓦尔背景。"""
     seed = (idx * 7919 + hash(headline)) & 0xFFFF or (idx + 1)
     img, d = _render_base(seed)
+
+    # 叠纳瓦尔背景(跟首页保持视觉一致)
+    img = _overlay_naval(img)
+    d = ImageDraw.Draw(img)
 
     # idx 从 1 开始；含引导卡共 total+1 张
     total_with_lead = total + 1
