@@ -69,6 +69,7 @@ def run(url: str, publish: bool = False, max_cards: int = 6, work_root: Path = N
     # 保存最终结果
     final = {
         "url": url,
+        "work_dir": str(work_dir),
         "title": script["title"],
         "backend": script.get("_backend", "unknown"),
         "transcript_chars": len(transcript),
@@ -87,12 +88,58 @@ def run(url: str, publish: bool = False, max_cards: int = 6, work_root: Path = N
     return final
 
 
+def regenerate_from_script(work_dir: Path, publish: bool = False) -> dict:
+    """从已有 script.json (用户审核后修改过的) 重新渲染卡片 + 重建公众号草稿。
+    用于审核流程:用户改了 title/lead/卡片文字后,跑这个覆盖出新草稿。"""
+    work_dir = Path(work_dir)
+    script_path = work_dir / "script.json"
+    if not script_path.exists():
+        raise FileNotFoundError(f"找不到 script.json: {script_path}")
+    script = json.loads(script_path.read_text(encoding="utf-8"))
+    print(f"[regen] 工作目录: {work_dir}")
+    print(f"[regen] 标题: {script['title']}")
+    print(f"[regen] 卡片数: {len(script['cards'])}")
+
+    # 重新渲染卡片(覆盖旧的)
+    card_paths = cards.render_all(script, work_dir / "cards")
+    print(f"[regen] 重渲染 {len(card_paths)} 张卡片")
+
+    # 重新上传 + 建草稿(旧草稿不删,微信保留多份)
+    result = wechat.publish_newspic(
+        title=script["title"],
+        content=script["lead"],
+        image_paths=card_paths,
+        publish=publish,
+    )
+    final = {
+        "title": script["title"],
+        "backend": script.get("_backend", "regen"),
+        "cards_count": len(script["cards"]),
+        "images_count": len(card_paths),
+        "regenerated": True,
+        **result,
+    }
+    (work_dir / "result.json").write_text(
+        json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(json.dumps(final, ensure_ascii=False, indent=2))
+    return final
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("url", help="抖音链接或分享文本")
+    p.add_argument("url", nargs="?", help="抖音链接或分享文本(regen 模式可省)")
     p.add_argument("--publish", action="store_true", help="立即群发（默认仅存草稿）")
     p.add_argument("--max-cards", type=int, default=6, help="内容卡数量上限（默认 6）")
+    p.add_argument("--regen-from", help="从指定 work_dir 的 script.json 重新生成草稿(审核后用)")
     args = p.parse_args()
+
+    if args.regen_from:
+        regenerate_from_script(Path(args.regen_from), publish=args.publish)
+        return
+
+    if not args.url:
+        print("[error] 需要 url 参数,或者用 --regen-from <work_dir>"); sys.exit(2)
 
     try:
         run(args.url, publish=args.publish, max_cards=args.max_cards)

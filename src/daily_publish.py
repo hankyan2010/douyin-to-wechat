@@ -39,12 +39,14 @@ def generate_one() -> dict:
         title = result["title"]
         draft_id = result["draft_media_id"]
         backend = result.get("backend", "")
+        work_dir = result.get("work_dir", "")
 
         queue.update(
             item["id"],
             status="draft_ready",
             title=title,
             draft_media_id=draft_id,
+            work_dir=work_dir,
         )
 
         ready_count = _draft_ready_count()
@@ -96,15 +98,81 @@ def publish_due() -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def regen_one(item_id: str) -> dict:
+    """从已修改的 script.json 重建草稿(审核流程核心命令)。
+    1) 按 item_id 找到对应的 work_dir
+    2) 调 main.regenerate_from_script
+    3) 更新 queue 的 draft_media_id
+    """
+    items = queue.list_items()
+    matched = [i for i in items if i["id"] == item_id or i["id"].startswith(item_id)]
+    if not matched:
+        return {"ok": False, "error": f"id not found: {item_id}"}
+    item = matched[0]
+    work_dir = item.get("work_dir")
+    if not work_dir:
+        return {"ok": False, "error": f"item {item['id']} 没有 work_dir 字段(可能是旧数据,跑 generate 重新生成)"}
+    print(f"[regen] {item['id']} work_dir={work_dir}")
+    try:
+        result = main_mod.regenerate_from_script(Path(work_dir), publish=False)
+        new_draft_id = result["draft_media_id"]
+        new_title = result["title"]
+        queue.update(item["id"], title=new_title, draft_media_id=new_draft_id, status="draft_ready")
+        return {"ok": True, "action": "regen", "item_id": item["id"],
+                "title": new_title, "draft_media_id": new_draft_id}
+    except Exception as e:
+        traceback.print_exc()
+        return {"ok": False, "error": str(e)}
+
+
+def publish_one(item_id: str) -> dict:
+    """按 ID 发布指定的 draft_ready 条目（审核通过后用）。"""
+    items = queue.list_items()
+    matched = [i for i in items if i["id"] == item_id or i["id"].startswith(item_id)]
+    if not matched:
+        print(f"[publish_one] 找不到 ID={item_id}")
+        return {"ok": False, "error": f"id not found: {item_id}"}
+    item = matched[0]
+    if item.get("status") != "draft_ready":
+        print(f"[publish_one] {item['id']} 状态={item.get('status')},不是 draft_ready")
+        return {"ok": False, "error": f"status={item.get('status')}"}
+    if not item.get("draft_media_id"):
+        return {"ok": False, "error": "missing draft_media_id"}
+    print(f"[publish_one] 发布 {item['id']}: 《{item['title']}》")
+    try:
+        r = wechat.publish_draft(item["draft_media_id"])
+        publish_id = r.get("publish_id")
+        queue.update(item["id"], status="published", publish_id=publish_id)
+        try:
+            n = notify.notify_published(item["title"], publish_id)
+            print(f"[publish_one] notify: {n}")
+        except Exception:
+            pass
+        return {"ok": True, "action": "publish_one", "item_id": item["id"],
+                "title": item["title"], "publish_id": publish_id}
+    except Exception as e:
+        traceback.print_exc()
+        return {"ok": False, "error": str(e)}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("action", nargs="?", default="publish",
-                   choices=["publish", "generate", "run-one"],
-                   help="publish: 发布 draft_ready / generate: 生成 pending → draft_ready / run-one: 旧版兼容（生成）")
+                   choices=["publish", "generate", "run-one", "publish-one", "regen"],
+                   help="publish: 发布最早 draft_ready / generate: 生成 pending → draft_ready / publish-one: 按 ID 发 / regen: 改完 script.json 重建草稿 / run-one: 旧版兼容")
+    p.add_argument("--id", help="publish-one / regen 时指定的条目 ID (支持前缀)")
     args = p.parse_args()
 
     if args.action == "publish":
         out = publish_due()
+    elif args.action == "publish-one":
+        if not args.id:
+            print("[error] publish-one 需要 --id <item_id>"); sys.exit(2)
+        out = publish_one(args.id)
+    elif args.action == "regen":
+        if not args.id:
+            print("[error] regen 需要 --id <item_id>"); sys.exit(2)
+        out = regen_one(args.id)
     else:
         out = generate_one()
 
