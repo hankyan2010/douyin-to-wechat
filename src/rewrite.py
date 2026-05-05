@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 
+import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -31,7 +32,10 @@ if not ARK_KEY:
 client = OpenAI(api_key=ARK_KEY, base_url=ARK_BASE)
 
 # 主备切换：优先走 Mac 上的 Claude Code（5x 会员，质量更高）
-# Mac 不在线/超时/解析失败 → 自动降级到豆包
+# 优先用 HTTP bridge (本机 daemon 包装,绕过 SSH 无法访问 Keychain 的问题)
+# 失败再降级到 SSH 直跑 (兼容旧路径) → 失败再降级到豆包
+CLAUDE_BRIDGE_URL = os.getenv("CLAUDE_BRIDGE_URL", "")
+CLAUDE_BRIDGE_TOKEN = os.getenv("CLAUDE_BRIDGE_TOKEN", "")
 MAC_TS_IP = os.getenv("MAC_TS_IP", "100.119.31.39")
 MAC_USER = os.getenv("MAC_USER", "yanhan")
 MAC_CLAUDE_BIN = os.getenv("MAC_CLAUDE_BIN", "/Users/yanhan/.npm-global/bin/claude")
@@ -88,7 +92,26 @@ def _strip_json_fence(raw: str) -> str:
     return m.group(0) if m else raw
 
 
+def _call_claude_via_bridge(full_prompt: str) -> str:
+    """通过本机 HTTP bridge 调 claude (绕过 SSH 不可访问 Keychain 问题)。"""
+    if not CLAUDE_BRIDGE_URL or not CLAUDE_BRIDGE_TOKEN:
+        raise RuntimeError("CLAUDE_BRIDGE_URL/TOKEN 未配置")
+    r = requests.post(
+        f"{CLAUDE_BRIDGE_URL}/rewrite",
+        headers={"X-Token": CLAUDE_BRIDGE_TOKEN, "Content-Type": "application/json"},
+        json={"prompt": full_prompt},
+        timeout=PRIMARY_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"bridge http={r.status_code}: {r.text[:300]}")
+    data = r.json()
+    if "output" not in data:
+        raise RuntimeError(f"bridge 返回异常: {data}")
+    return data["output"]
+
+
 def _call_claude_once(full_prompt: str) -> str:
+    """旧路径:直接 SSH 跑 claude -p (备用,通常在 SSH session 里读不到 Keychain 凭证会失败)。"""
     cmd = [
         "ssh",
         "-o", "ConnectTimeout=8",
@@ -106,19 +129,22 @@ def _call_claude_once(full_prompt: str) -> str:
 
 
 def rewrite_via_claude(transcript: str, max_cards: int = 6) -> dict:
-    """主：SSH 到 Mac 跑 claude -p。失败重试一次。"""
+    """主：HTTP bridge → 本机 claude (优先) / SSH 直跑 (兜底)。失败重试一次。"""
     user_msg = USER_TEMPLATE.format(transcript=transcript.strip())
     full_prompt = SYSTEM + "\n\n---\n\n" + user_msg + "\n\n严格只输出 JSON 对象本体，不要任何前后说明文字、不要 markdown 代码块。"
-    print(f"[rewrite] 主路径: SSH→Mac claude -p (timeout={PRIMARY_TIMEOUT}s)")
+
+    use_bridge = bool(CLAUDE_BRIDGE_URL and CLAUDE_BRIDGE_TOKEN)
+    backend_label = "claude_bridge" if use_bridge else "claude_ssh"
+    print(f"[rewrite] 主路径: {'HTTP bridge' if use_bridge else 'SSH→Mac claude -p'} (timeout={PRIMARY_TIMEOUT}s)")
 
     last_err = None
     for attempt in range(2):
         try:
-            raw_out = _call_claude_once(full_prompt)
+            raw_out = _call_claude_via_bridge(full_prompt) if use_bridge else _call_claude_once(full_prompt)
             stripped = _strip_json_fence(raw_out)
             data = json.loads(stripped)
             data["cards"] = data.get("cards", [])[:max_cards]
-            data["_backend"] = "claude"
+            data["_backend"] = backend_label
             return data
         except (json.JSONDecodeError, KeyError) as e:
             last_err = e
