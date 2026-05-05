@@ -62,6 +62,36 @@ def _truncate_bytes(s: str, max_bytes: int) -> str:
             cut = cut[:-1]
 
 
+def _build_crop_percent_list(src_w: int = 1080, src_h: int = 1440) -> list:
+    """根据原图宽高(默认 1080x1440 3:4),为 1:1 / 16:9 / 2.35:1 三种预览比例
+    生成「居中竖向裁剪」坐标。
+
+    不传 cover_info 时,微信会用默认行为放大首图,导致预览图巨大不全。
+    """
+    src_ratio = src_w / src_h  # 0.75 for 3:4
+    crops = []
+    for ratio_str, target_ratio in [("1_1", 1.0), ("16_9", 16/9), ("2.35_1", 2.35)]:
+        if target_ratio >= src_ratio:
+            # 目标比原图更横,需要纵向裁(裁掉上下)
+            crop_h_in_src = src_w / target_ratio
+            y_pad = (src_h - crop_h_in_src) / 2 / src_h
+            crops.append({
+                "ratio": ratio_str,
+                "x1": "0", "y1": f"{y_pad:.6f}",
+                "x2": "1", "y2": f"{1 - y_pad:.6f}",
+            })
+        else:
+            # 目标比原图更窄,需要横向裁
+            crop_w_in_src = src_h * target_ratio
+            x_pad = (src_w - crop_w_in_src) / 2 / src_w
+            crops.append({
+                "ratio": ratio_str,
+                "x1": f"{x_pad:.6f}", "y1": "0",
+                "x2": f"{1 - x_pad:.6f}", "y2": "1",
+            })
+    return crops
+
+
 def create_newspic_draft(title: str, content: str, image_media_ids: list,
                           need_open_comment: int = 1) -> str:
     """创建贴图草稿，返回 media_id。
@@ -81,6 +111,10 @@ def create_newspic_draft(title: str, content: str, image_media_ids: list,
         "only_fans_can_comment": 0,
         "image_info": {
             "image_list": [{"image_media_id": mid} for mid in image_media_ids],
+        },
+        "cover_info": {
+            # 关键:不传这个微信会把首图整张放大到预览框,显示不全
+            "crop_percent_list": _build_crop_percent_list(),
         },
     }
     # 关键：必须 ensure_ascii=False 用 raw bytes 发送，否则微信会把 \uXXXX 当字面字符存
